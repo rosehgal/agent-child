@@ -33,6 +33,37 @@ if ! command -v tmux >/dev/null 2>&1; then
   echo "WARNING: tmux is not installed. Install it with: brew install tmux (macOS) or apt install tmux (Linux)"
 fi
 
+# --- tmux quality-of-life: mouse support (click panes to focus, drag borders) ---
+TMUX_CONF="$HOME/.tmux.conf"
+if ! grep -qs 'set -g mouse on' "$TMUX_CONF" 2>/dev/null; then
+  printf '\nset -g mouse on\n' >> "$TMUX_CONF"
+  echo "configured: mouse support in $TMUX_CONF"
+fi
+tmux set-option -g mouse on 2>/dev/null || true  # apply to a running server too
+
+# --- auto-tmux: make plain `claude` always start inside tmux ---
+# Claude Code has no native setting for this (--tmux requires --worktree),
+# so we install a shell alias that routes through childmux. Skip with
+# CHILD_NO_ALIAS=1.
+if [ "${CHILD_NO_ALIAS:-0}" != "1" ]; then
+  ALIAS_LINE="alias claude='childmux claude'  # agent-child: start claude inside tmux"
+  case "$(basename "${SHELL:-}")" in
+    zsh)  RC="$HOME/.zshrc" ;;
+    bash) RC="$HOME/.bashrc" ;;
+    *)    RC="" ;;
+  esac
+  if [ -n "$RC" ]; then
+    if ! grep -qs "agent-child: start claude inside tmux" "$RC" 2>/dev/null; then
+      printf '\n%s\n' "$ALIAS_LINE" >> "$RC"
+      echo "configured: 'claude' alias in $RC — new claude sessions start inside tmux"
+      echo "  (open a new terminal or 'source $RC' to activate; set CHILD_NO_ALIAS=1 to skip)"
+    fi
+  else
+    echo "NOTE: couldn't detect your shell rc file; to auto-start claude in tmux add:"
+    echo "  $ALIAS_LINE"
+  fi
+fi
+
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "WARNING: $BIN_DIR is not on your PATH. Add it to your shell profile:"

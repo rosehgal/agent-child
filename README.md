@@ -43,8 +43,17 @@ curl -fsSL https://raw.githubusercontent.com/rosehgal/agent-child/main/install.s
 
 **Important:** tmux can only split a window it owns — it cannot split a plain
 terminal from the outside. To get child panes appearing *in the same window*
-as your main agent, start the agent with `childmux` (installed alongside
-`child`):
+as your main agent, the agent must be started inside tmux.
+
+The installer takes care of this automatically: it adds
+`alias claude='childmux claude'` to your shell rc (Claude Code has no native
+setting for this — its `--tmux` flag only works with `--worktree`), so every
+new `claude` session transparently starts inside tmux and is splittable. It
+also enables tmux mouse support (`set -g mouse on` in `~/.tmux.conf`), so you
+can click a pane to focus it and drag borders to resize. Set
+`CHILD_NO_ALIAS=1` when running the installer to skip the alias.
+
+For other agents, or if you skipped the alias, use `childmux` directly:
 
 ```sh
 childmux                     # starts claude inside tmux, splittable
@@ -55,6 +64,10 @@ childmux gemini
 If you start your agent without tmux, `/child` still works — children are
 collected in a background tmux session you can attach to (the attach command
 is printed) — but the window you're typing in won't visually split.
+
+**Navigating panes:** click with the mouse (enabled by the installer), or
+`Ctrl+b` + arrow keys to move between panes, `Ctrl+b z` to zoom a pane
+fullscreen (toggle), `Ctrl+b x` to kill one, `Ctrl+b d` to detach.
 
 Inside Claude Code:
 
