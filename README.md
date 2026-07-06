@@ -41,6 +41,21 @@ curl -fsSL https://raw.githubusercontent.com/rosehgal/agent-child/main/install.s
 
 ## Use
 
+**Important:** tmux can only split a window it owns — it cannot split a plain
+terminal from the outside. To get child panes appearing *in the same window*
+as your main agent, start the agent with `childmux` (installed alongside
+`child`):
+
+```sh
+childmux                     # starts claude inside tmux, splittable
+childmux claude --continue   # or any agent command
+childmux gemini
+```
+
+If you start your agent without tmux, `/child` still works — children are
+collected in a background tmux session you can attach to (the attach command
+is printed) — but the window you're typing in won't visually split.
+
 Inside Claude Code:
 
 ```

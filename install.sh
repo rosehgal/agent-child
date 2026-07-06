@@ -16,14 +16,17 @@ mkdir -p "$BIN_DIR" "$CMD_DIR"
 
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/bin/child" ]; then
   cp "$SCRIPT_DIR/bin/child" "$BIN_DIR/child"
+  cp "$SCRIPT_DIR/bin/childmux" "$BIN_DIR/childmux"
   cp "$SCRIPT_DIR/commands/child.md" "$CMD_DIR/child.md"
 else
   curl -fsSL "$REPO_RAW/bin/child" -o "$BIN_DIR/child"
+  curl -fsSL "$REPO_RAW/bin/childmux" -o "$BIN_DIR/childmux"
   curl -fsSL "$REPO_RAW/commands/child.md" -o "$CMD_DIR/child.md"
 fi
-chmod +x "$BIN_DIR/child"
+chmod +x "$BIN_DIR/child" "$BIN_DIR/childmux"
 
 echo "installed: $BIN_DIR/child"
+echo "installed: $BIN_DIR/childmux  (launch your agent inside tmux for in-window splits)"
 echo "installed: $CMD_DIR/child.md  (/child command in Claude Code)"
 
 if ! command -v tmux >/dev/null 2>&1; then

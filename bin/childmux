@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#
+# childmux — launch an agent inside tmux so /child can split the window
+# you're looking at.
+#
+# Usage:
+#   childmux                    # start claude inside tmux
+#   childmux claude --continue  # any agent command, passed through verbatim
+#   childmux gemini
+#
+# If you're already inside tmux it just runs the command. Otherwise it wraps
+# the current terminal in a new tmux session and runs the agent in it — from
+# there, /child splits appear right next to your main agent.
+set -euo pipefail
+
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "childmux: tmux is required but not installed (brew install tmux / apt install tmux)" >&2
+  exit 1
+fi
+
+CMD=()
+if [ $# -gt 0 ]; then CMD=("$@"); else CMD=(claude); fi
+
+if [ -n "${TMUX:-}" ]; then
+  exec "${CMD[@]}"
+fi
+
+QUOTED=""
+for a in "${CMD[@]}"; do QUOTED="$QUOTED $(printf '%q' "$a")"; done
+
+SESSION="agent-$$"
+exec tmux new-session -s "$SESSION" -c "$PWD" "$QUOTED"

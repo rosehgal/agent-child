@@ -17,7 +17,7 @@ Steps:
    ```
 
    If the user passed `--agent`, `--cmd`, `--no-fork`, `--list`, or `--killall`, forward them before the `--`.
-4. Relay the script's output to the user verbatim — especially the pane ID and, if printed, the `tmux attach -t child-<pid>` command they need to see the child agent. If the current session is not running inside tmux, remind the user they can attach from any terminal, or mention `--open` (macOS) to auto-open a terminal window.
+4. Relay the script's output to the user verbatim — especially the pane ID and, if printed, the `tmux attach -t child-<pid>` command they need to see the child agent. If the current session is not running inside tmux, tell the user the window they are looking at cannot be split (tmux can only split its own windows), that they can attach from any terminal or pass `--open` (macOS), and that starting the agent with `childmux` next time makes /child split the current window in place.
 
 Notes:
 - The child is a **fork** of this session (same conversation history) by default; it runs independently from here on.
