@@ -1,0 +1,13 @@
+{
+  "name": "agent-child",
+  "owner": {
+    "name": "Rohit Sehgal"
+  },
+  "plugins": [
+    {
+      "name": "agent-child",
+      "source": "./",
+      "description": "Fork your agent session into tmux split panes — child agents that die when the parent exits"
+    }
+  ]
+}

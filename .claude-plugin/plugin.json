@@ -1,0 +1,12 @@
+{
+  "name": "agent-child",
+  "description": "Fork your agent session into tmux split panes — child agents that die when the parent exits",
+  "version": "0.1.0",
+  "author": {
+    "name": "Rohit Sehgal"
+  },
+  "homepage": "https://github.com/rosehgal/agent-child",
+  "repository": "https://github.com/rosehgal/agent-child",
+  "license": "MIT",
+  "keywords": ["tmux", "fork", "agents", "claude", "gemini", "multiplexing"]
+}

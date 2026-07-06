@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+#
+# child — fork the current agent session into a tmux split pane.
+#
+# Spawns a child agent (a forked Claude session by default, or gemini / codex /
+# any command) in a tmux pane. Every child pane runs a watchdog tied to the
+# main agent's PID: when the main agent exits, all of its child panes (and the
+# tmux session `child` created for them, if any) are killed automatically.
+#
+# Usage:
+#   child [options] [--] [prompt for the child agent...]
+#
+# Options:
+#   --agent <name>     claude (default) | gemini | codex | any CLI on PATH
+#   --cmd "<command>"  run an arbitrary command instead of an agent CLI
+#   --session <uuid>   Claude session ID to fork (default: auto-detect)
+#   --no-fork          for claude: start a fresh session, don't fork this one
+#   --main-pid <pid>   override the PID the children's lifetime is tied to
+#   --open             if not inside tmux, open a terminal attached to the session
+#   --list             list live child panes for this main agent
+#   --killall          kill all child panes for this main agent
+#   -h, --help         show this help
+#
+# Examples:
+#   child "run the test suite and fix failures"     # fork claude into a pane
+#   child --agent gemini "review src/ for bugs"
+#   child --cmd "npm run dev"
+set -euo pipefail
+
+RUNDIR="${HOME}/.cache/agent-child"
+mkdir -p "$RUNDIR"
+
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
+
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "child: tmux is required but not installed (brew install tmux / apt install tmux)" >&2
+  exit 1
+fi
+
+AGENT="claude"
+RAW_CMD=""
+SESSION_ID="${CLAUDE_SESSION_ID:-}"
+NO_FORK=0
+MAIN_PID=""
+OPEN_TERMINAL=0
+ACTION="spawn"
+PROMPT_ARGS=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --agent)    AGENT="$2"; shift 2 ;;
+    --cmd)      RAW_CMD="$2"; shift 2 ;;
+    --session)  SESSION_ID="$2"; shift 2 ;;
+    --no-fork)  NO_FORK=1; shift ;;
+    --main-pid) MAIN_PID="$2"; shift 2 ;;
+    --open)     OPEN_TERMINAL=1; shift ;;
+    --list)     ACTION="list"; shift ;;
+    --killall)  ACTION="killall"; shift ;;
+    -h|--help)  usage; exit 0 ;;
+    --)         shift; PROMPT_ARGS+=("$@"); break ;;
+    *)          PROMPT_ARGS+=("$1"); shift ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Find the main agent process: walk up the process ancestry looking for a
+# known agent CLI. Children's lifetime is tied to this PID. Falls back to the
+# invoking shell, so `child` from a bare terminal ties children to that shell.
+# ---------------------------------------------------------------------------
+is_agent_proc() {
+  local first second
+  first=$(basename "${1%% *}")
+  second=$(echo "$1" | awk '{print $2}')
+  case "$first" in
+    claude|gemini|codex|cursor-agent|aider|copilot|amp|goose) return 0 ;;
+    node|bun|deno)
+      case "$(basename "${second:-x}")" in
+        claude*|gemini*|codex*|aider*) return 0 ;;
+      esac ;;
+  esac
+  return 1
+}
+
+find_main_pid() {
+  local pid=$$ cmdline
+  while [ "$pid" -gt 1 ]; do
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') || break
+    [ -n "$pid" ] && [ "$pid" -gt 1 ] || break
+    cmdline=$(ps -o command= -p "$pid" 2>/dev/null) || break
+    if is_agent_proc "$cmdline"; then echo "$pid"; return 0; fi
+  done
+  echo "$PPID"
+}
+
+[ -n "$MAIN_PID" ] || MAIN_PID=$(find_main_pid)
+PANES_FILE="$RUNDIR/panes-$MAIN_PID"
+CHILD_SESSION="child-$MAIN_PID"
+
+# ---------------------------------------------------------------------------
+# list / killall
+# ---------------------------------------------------------------------------
+live_panes() {
+  [ -f "$PANES_FILE" ] || return 0
+  local pane
+  while IFS= read -r pane; do
+    tmux display-message -p -t "$pane" \
+      '#{pane_id} #{session_name}:#{window_index}.#{pane_index} #{pane_current_command}' \
+      2>/dev/null || true
+  done < "$PANES_FILE"
+}
+
+if [ "$ACTION" = "list" ]; then
+  out=$(live_panes)
+  if [ -n "$out" ]; then echo "$out"; else echo "no live child panes for main pid $MAIN_PID"; fi
+  exit 0
+fi
+
+if [ "$ACTION" = "killall" ]; then
+  if [ -f "$PANES_FILE" ]; then
+    while IFS= read -r pane; do tmux kill-pane -t "$pane" 2>/dev/null || true; done < "$PANES_FILE"
+    rm -f "$PANES_FILE"
+  fi
+  tmux kill-session -t "$CHILD_SESSION" 2>/dev/null || true
+  echo "killed all children of main pid $MAIN_PID"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Build the child agent command
+# ---------------------------------------------------------------------------
+detect_claude_session() {
+  # Claude Code stores transcripts under a slug of the directory the session
+  # was launched from; the newest transcript there is the running session.
+  # The agent may have cd'd deeper, so walk up from $PWD until a match.
+  local dir="$PWD" slug pdir
+  while [ -n "$dir" ]; do
+    slug=$(printf '%s' "$dir" | sed 's/[^a-zA-Z0-9]/-/g')
+    pdir="$HOME/.claude/projects/$slug"
+    if [ -d "$pdir" ]; then
+      ls -t "$pdir"/*.jsonl 2>/dev/null | head -1 | xargs -I{} basename {} .jsonl
+      return 0
+    fi
+    [ "$dir" = "/" ] && break
+    dir=$(dirname "$dir")
+  done
+}
+
+PROMPT=""
+if [ ${#PROMPT_ARGS[@]} -gt 0 ]; then PROMPT="${PROMPT_ARGS[*]}"; fi
+
+if [ -n "$RAW_CMD" ]; then
+  CHILD_CMD="$RAW_CMD"
+elif [ "$AGENT" = "claude" ]; then
+  if [ "$NO_FORK" -eq 0 ]; then
+    [ -n "$SESSION_ID" ] || SESSION_ID=$(detect_claude_session)
+  fi
+  if [ -n "$SESSION_ID" ] && [ "$NO_FORK" -eq 0 ]; then
+    CHILD_CMD="claude --resume $(printf '%q' "$SESSION_ID") --fork-session"
+  else
+    CHILD_CMD="claude"
+  fi
+  [ -n "$PROMPT" ] && CHILD_CMD="$CHILD_CMD $(printf '%q' "$PROMPT")"
+else
+  CHILD_CMD="$AGENT"
+  [ -n "$PROMPT" ] && CHILD_CMD="$CHILD_CMD $(printf '%q' "$PROMPT")"
+fi
+
+# ---------------------------------------------------------------------------
+# Pane wrapper: a background watchdog kills the pane when the main agent
+# dies; the child agent runs in the foreground so the pane closes when the
+# agent exits on its own.
+# ---------------------------------------------------------------------------
+find "$RUNDIR" -name 'pane-*.sh' -mtime +1 -delete 2>/dev/null || true
+WRAPPER="$RUNDIR/pane-$$-$RANDOM.sh"
+cat > "$WRAPPER" <<EOF
+#!/usr/bin/env bash
+(
+  while kill -0 $MAIN_PID 2>/dev/null; do sleep 2; done
+  tmux kill-pane -t "\$TMUX_PANE" 2>/dev/null
+) &
+exec $CHILD_CMD
+EOF
+chmod +x "$WRAPPER"
+
+# ---------------------------------------------------------------------------
+# Spawn the pane
+# ---------------------------------------------------------------------------
+if [ -n "${TMUX:-}" ]; then
+  # Already inside tmux: split the current window; keep focus on the main pane.
+  PANE_ID=$(tmux split-window -d -P -F '#{pane_id}' -c "$PWD" "bash $WRAPPER")
+  tmux select-layout main-vertical >/dev/null
+  echo "$PANE_ID" >> "$PANES_FILE"
+  echo "child agent started in pane $PANE_ID (main pid $MAIN_PID)"
+else
+  # Not inside tmux: keep children in a dedicated session the user can attach to.
+  if tmux has-session -t "$CHILD_SESSION" 2>/dev/null; then
+    PANE_ID=$(tmux split-window -d -P -F '#{pane_id}' -t "$CHILD_SESSION" -c "$PWD" "bash $WRAPPER")
+    tmux select-layout -t "$CHILD_SESSION" tiled >/dev/null
+  else
+    tmux new-session -d -s "$CHILD_SESSION" -c "$PWD" "bash $WRAPPER"
+    PANE_ID=$(tmux display-message -p -t "$CHILD_SESSION" '#{pane_id}')
+  fi
+  echo "$PANE_ID" >> "$PANES_FILE"
+  echo "child agent started in tmux session '$CHILD_SESSION' pane $PANE_ID (main pid $MAIN_PID)"
+  echo "view it with:  tmux attach -t $CHILD_SESSION"
+  if [ "$OPEN_TERMINAL" -eq 1 ] && command -v osascript >/dev/null; then
+    osascript -e "tell application \"Terminal\" to do script \"tmux attach -t $CHILD_SESSION\"" >/dev/null
+    osascript -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
+  fi
+fi
+
+echo "command: $CHILD_CMD"
