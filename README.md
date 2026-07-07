@@ -140,6 +140,7 @@ If the main agent **is running inside tmux**, children appear as splits in the s
 ## Limitations
 
 - Session **forking** is Claude Code-specific (it's the only CLI with `--resume --fork-session`); other agents start fresh sessions in managed panes with the same lifecycle guarantees.
+- Forking the **currently-live** session can race with Claude Code persisting it: right after heavy activity the session isn't resumable yet, and `claude --resume` fails with *"No conversation found"*. When that happens the child **automatically falls back to a fresh session** (with your prompt, if any) so the pane still opens instead of vanishing — you just don't inherit the chat history for that one. Retrying a moment later usually forks cleanly.
 - The watchdog polls every 2 s, so children outlive the parent by at most ~2 s.
 - PID reuse is theoretically possible on very long-lived systems; `--killall` is your escape hatch.
 
