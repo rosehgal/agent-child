@@ -19,6 +19,7 @@
 #   --open             if not inside tmux, open a terminal attached to the session
 #   --list             list live child panes for this main agent
 #   --killall          kill all child panes for this main agent
+#   --update           update agent-child to the latest version from GitHub
 #   -h, --help         show this help
 #
 # Examples:
@@ -30,7 +31,7 @@ set -euo pipefail
 RUNDIR="${HOME}/.cache/agent-child"
 mkdir -p "$RUNDIR"
 
-usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
 if ! command -v tmux >/dev/null 2>&1; then
   echo "child: tmux is required but not installed (brew install tmux / apt install tmux)" >&2
@@ -56,11 +57,18 @@ while [ $# -gt 0 ]; do
     --open)     OPEN_TERMINAL=1; shift ;;
     --list)     ACTION="list"; shift ;;
     --killall)  ACTION="killall"; shift ;;
+    --update)   ACTION="update"; shift ;;
     -h|--help)  usage; exit 0 ;;
     --)         shift; PROMPT_ARGS+=("$@"); break ;;
     *)          PROMPT_ARGS+=("$1"); shift ;;
   esac
 done
+
+if [ "$ACTION" = "update" ]; then
+  echo "updating agent-child from GitHub..."
+  curl -fsSL https://raw.githubusercontent.com/rosehgal/agent-child/main/install.sh | bash
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Find the main agent process: walk up the process ancestry looking for a
@@ -183,19 +191,30 @@ EOF
 chmod +x "$WRAPPER"
 
 # ---------------------------------------------------------------------------
-# Spawn the pane
+# Spawn the pane — smart split:
+#   * always split the LARGEST pane in the window, so repeated /child calls
+#     produce a balanced, visually appealing layout instead of slivers
+#   * always exactly 50-50
+#   * wide pane -> side-by-side split, tall pane -> stacked split (terminal
+#     cells are ~2x taller than wide, so compare width against 2*height)
 # ---------------------------------------------------------------------------
+smart_split() {
+  local window="$1" target w h dir
+  read -r target w h < <(tmux list-panes -t "$window" -F '#{pane_id} #{pane_width} #{pane_height}' \
+    | awk '{ a = $2 * $3; if (a > max) { max = a; line = $0 } } END { print line }')
+  if [ "${w:-0}" -gt $(( ${h:-0} * 2 )) ]; then dir="-h"; else dir="-v"; fi
+  tmux split-window "$dir" -l '50%' -d -P -F '#{pane_id}' -t "$target" -c "$PWD" "bash $WRAPPER"
+}
+
 if [ -n "${TMUX:-}" ]; then
   # Already inside tmux: split the current window; keep focus on the main pane.
-  PANE_ID=$(tmux split-window -d -P -F '#{pane_id}' -c "$PWD" "bash $WRAPPER")
-  tmux select-layout main-vertical >/dev/null
+  PANE_ID=$(smart_split "$(tmux display-message -p '#{window_id}')")
   echo "$PANE_ID" >> "$PANES_FILE"
   echo "child agent started in pane $PANE_ID (main pid $MAIN_PID)"
 else
   # Not inside tmux: keep children in a dedicated session the user can attach to.
   if tmux has-session -t "$CHILD_SESSION" 2>/dev/null; then
-    PANE_ID=$(tmux split-window -d -P -F '#{pane_id}' -t "$CHILD_SESSION" -c "$PWD" "bash $WRAPPER")
-    tmux select-layout -t "$CHILD_SESSION" tiled >/dev/null
+    PANE_ID=$(smart_split "$CHILD_SESSION")
   else
     tmux new-session -d -s "$CHILD_SESSION" -c "$PWD" "bash $WRAPPER"
     PANE_ID=$(tmux display-message -p -t "$CHILD_SESSION" '#{pane_id}')

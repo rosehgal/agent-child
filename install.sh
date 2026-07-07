@@ -41,6 +41,15 @@ if ! grep -qs 'set -g mouse on' "$TMUX_CONF" 2>/dev/null; then
 fi
 tmux set-option -g mouse on 2>/dev/null || true  # apply to a running server too
 
+# --- Shift+Enter passthrough (needed by Claude Code inside tmux) ---
+# tmux swallows modified keys like Shift+Enter unless extended-keys are enabled.
+if ! grep -qs 'extended-keys' "$TMUX_CONF" 2>/dev/null; then
+  printf 'set -s extended-keys always\nset -as terminal-features "xterm*:extkeys"\n' >> "$TMUX_CONF"
+  echo "configured: Shift+Enter (extended-keys) passthrough in $TMUX_CONF"
+  echo "  (a running tmux server picks this up fully only after restart: tmux kill-server)"
+fi
+tmux set-option -s extended-keys always 2>/dev/null || true
+
 # --- auto-tmux: make plain `claude` always start inside tmux ---
 # Claude Code has no native setting for this (--tmux requires --worktree),
 # so we install a shell alias that routes through childmux. Skip with

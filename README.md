@@ -5,7 +5,7 @@
 You're deep in a Claude Code (or Gemini CLI, Codex, ...) session and want to hand a task to a second agent *with the same context* — without losing your main session, and without orphaned processes hanging around afterwards. `agent-child` gives you a `/child` command (and a standalone `child` CLI) that:
 
 - **Forks the current session** into a new tmux pane — for Claude Code it uses `claude --resume <session> --fork-session`, so the child starts with your full conversation history.
-- **Organizes the splits** — the main agent stays in the big pane, children stack beside it (`main-vertical` layout), or live in a dedicated tmux session if the parent isn't running inside tmux.
+- **Smart 50-50 splits** — each new child splits the *largest* pane in the window, always exactly 50-50, side-by-side when that pane is wide and stacked when it's tall. Repeated `/child` calls therefore produce a balanced, visually pleasing layout (halves → quadrants → …) instead of ever-thinner slivers. Children live in a dedicated tmux session if the parent isn't running inside tmux.
 - **Ties child lifetime to the parent** — every child pane runs a watchdog on the main agent's PID. When the main agent exits, every child pane (and the tmux session created for them) is killed automatically. No orphans.
 - **Works with any agent** — `--agent gemini`, `--agent codex`, or `--cmd "anything"`.
 
@@ -69,6 +69,27 @@ is printed) — but the window you're typing in won't visually split.
 `Ctrl+b` + arrow keys to move between panes, `Ctrl+b z` to zoom a pane
 fullscreen (toggle), `Ctrl+b x` to kill one, `Ctrl+b d` to detach.
 
+**Shift+Enter:** tmux swallows modified keys by default, which breaks
+Claude Code's Shift+Enter (newline) in every pane. The installer fixes this by
+enabling `extended-keys` in `~/.tmux.conf`. If you installed while a tmux
+server was already running, restart it once (`tmux kill-server`) to pick the
+fix up. If Shift+Enter still doesn't work, your *terminal emulator* isn't
+sending the key — run `/terminal-setup` once inside Claude Code to configure
+it.
+
+## Updating
+
+On any machine where it's installed:
+
+```sh
+child --update
+```
+
+That re-downloads the latest scripts and command from GitHub and refreshes the
+config (all config edits are idempotent). Equivalently, re-run the curl
+one-liner, or `git pull && ./install.sh` in a clone. Plugin users:
+`/plugin marketplace update agent-child`.
+
 Inside Claude Code:
 
 ```
@@ -114,6 +135,7 @@ If the main agent **is running inside tmux**, children appear as splits in the s
 | `--main-pid <pid>` | Override the lifetime-anchor PID |
 | `--open` | macOS: open Terminal attached to the child session |
 | `--list` / `--killall` | Inspect / kill this parent's children |
+| `--update` | Update agent-child to the latest version from GitHub |
 
 ## Limitations
 
