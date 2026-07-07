@@ -156,6 +156,11 @@ detect_claude_session() {
 PROMPT=""
 if [ ${#PROMPT_ARGS[@]} -gt 0 ]; then PROMPT="${PROMPT_ARGS[*]}"; fi
 
+# FORKING marks the case that can fail at runtime (resuming the *current* live
+# session) and needs a fresh-session fallback; FALLBACK_CMD is that fallback.
+FORKING=0
+FALLBACK_CMD=""
+
 if [ -n "$RAW_CMD" ]; then
   CHILD_CMD="$RAW_CMD"
 elif [ "$AGENT" = "claude" ]; then
@@ -164,10 +169,15 @@ elif [ "$AGENT" = "claude" ]; then
   fi
   if [ -n "$SESSION_ID" ] && [ "$NO_FORK" -eq 0 ]; then
     CHILD_CMD="claude --resume $(printf '%q' "$SESSION_ID") --fork-session"
+    FORKING=1
+    FALLBACK_CMD="claude"
   else
     CHILD_CMD="claude"
   fi
-  [ -n "$PROMPT" ] && CHILD_CMD="$CHILD_CMD $(printf '%q' "$PROMPT")"
+  if [ -n "$PROMPT" ]; then
+    CHILD_CMD="$CHILD_CMD $(printf '%q' "$PROMPT")"
+    [ "$FORKING" -eq 1 ] && FALLBACK_CMD="$FALLBACK_CMD $(printf '%q' "$PROMPT")"
+  fi
 else
   CHILD_CMD="$AGENT"
   [ -n "$PROMPT" ] && CHILD_CMD="$CHILD_CMD $(printf '%q' "$PROMPT")"
@@ -177,10 +187,36 @@ fi
 # Pane wrapper: a background watchdog kills the pane when the main agent
 # dies; the child agent runs in the foreground so the pane closes when the
 # agent exits on its own.
+#
+# Forking the CURRENT session is the common case, and it can fail: Claude Code
+# won't `--resume` a conversation that is still live (the session you invoked
+# /child from), so it prints "No conversation found with session ID: …" and
+# exits non-zero within a second. With a plain `exec` the pane would then just
+# vanish, leaving no clue why. So for the fork case we don't exec — we run the
+# fork, and if it dies fast with a non-zero status we fall back to a fresh child
+# session so the pane always opens. The 8s guard distinguishes that startup
+# failure from a session the user actually worked in and then quit (which runs
+# longer and must NOT relaunch).
 # ---------------------------------------------------------------------------
 find "$RUNDIR" -name 'pane-*.sh' -mtime +1 -delete 2>/dev/null || true
 WRAPPER="$RUNDIR/pane-$$-$RANDOM.sh"
-cat > "$WRAPPER" <<EOF
+if [ "$FORKING" -eq 1 ]; then
+  cat > "$WRAPPER" <<EOF
+#!/usr/bin/env bash
+(
+  while kill -0 $MAIN_PID 2>/dev/null; do sleep 2; done
+  tmux kill-pane -t "\$TMUX_PANE" 2>/dev/null
+) &
+start=\$SECONDS
+$CHILD_CMD
+code=\$?
+if [ "\$code" -ne 0 ] && [ \$(( SECONDS - start )) -lt 8 ]; then
+  printf '\n\033[33m[child] could not fork the current session (it is live and not resumable yet) — starting a fresh child session instead.\033[0m\n' >&2
+  exec $FALLBACK_CMD
+fi
+EOF
+else
+  cat > "$WRAPPER" <<EOF
 #!/usr/bin/env bash
 (
   while kill -0 $MAIN_PID 2>/dev/null; do sleep 2; done
@@ -188,6 +224,7 @@ cat > "$WRAPPER" <<EOF
 ) &
 exec $CHILD_CMD
 EOF
+fi
 chmod +x "$WRAPPER"
 
 # ---------------------------------------------------------------------------
