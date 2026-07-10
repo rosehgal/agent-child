@@ -15,6 +15,9 @@
 #   --cmd "<command>"  run an arbitrary command instead of an agent CLI
 #   --session <uuid>   Claude session ID to fork (default: auto-detect)
 #   --no-fork          for claude: start a fresh session, don't fork this one
+#   -H, --horizontal   force a side-by-side split (columns) for this child
+#   -V, --vertical     force a stacked split (rows) for this child
+#                      (default: auto-pick direction, then tidy into an even grid)
 #   --dangerously-skip-permissions      force the child claude to skip permission
 #                                        prompts (auto-detected from the parent by default)
 #   --no-dangerously-skip-permissions   never pass the skip-permissions flag,
@@ -51,6 +54,8 @@ OPEN_TERMINAL=0
 ACTION="spawn"
 # auto = inherit from the parent agent; 1 = force on; 0 = force off
 SKIP_PERMISSIONS="auto"
+# "" = auto (aspect-ratio) + tiled rebalance; h = side-by-side; v = stacked
+SPLIT_DIR=""
 PROMPT_ARGS=()
 
 while [ $# -gt 0 ]; do
@@ -59,6 +64,8 @@ while [ $# -gt 0 ]; do
     --cmd)      RAW_CMD="$2"; shift 2 ;;
     --session)  SESSION_ID="$2"; shift 2 ;;
     --no-fork)  NO_FORK=1; shift ;;
+    -H|--horizontal) SPLIT_DIR="h"; shift ;;
+    -V|--vertical)   SPLIT_DIR="v"; shift ;;
     --dangerously-skip-permissions)    SKIP_PERMISSIONS=1; shift ;;
     --no-dangerously-skip-permissions) SKIP_PERMISSIONS=0; shift ;;
     --main-pid) MAIN_PID="$2"; shift 2 ;;
@@ -113,20 +120,26 @@ PANES_FILE="$RUNDIR/panes-$MAIN_PID"
 CHILD_SESSION="child-$MAIN_PID"
 
 # ---------------------------------------------------------------------------
-# Inherit permission mode. If the parent agent runs with permission prompts
-# skipped (`--dangerously-skip-permissions` / `--allow-dangerously-skip-permissions`),
-# the child should too — otherwise a forked/fresh child silently drops back to
-# prompting. We resolve it from, in order: an explicit --[no-]dangerously-skip-
-# permissions flag, a marker env var we propagate to descendants (tmux panes
-# don't keep process ancestry, so grandchildren can't sniff the flag directly),
-# then the main agent's own command line.
+# Inherit permission mode. If the parent agent actually bypasses permission
+# prompts (`--dangerously-skip-permissions`), the child should too — otherwise
+# a forked/fresh child silently drops back to prompting. We resolve it from, in
+# order: an explicit --[no-]dangerously-skip-permissions flag, a marker env var
+# we propagate to descendants (tmux panes don't keep process ancestry, so
+# grandchildren can't sniff the flag directly), then the main agent's own
+# command line.
+#
+# NOTE: only `--dangerously-skip-permissions` puts the parent in bypass mode.
+# `--allow-dangerously-skip-permissions` merely makes bypass *available* without
+# enabling it, so the parent still prompts — we must NOT treat it as bypass, or
+# children would skip prompts the parent doesn't. The leading space in the glob
+# keeps `--allow-...` from matching `--dangerously-...` as a substring.
 # ---------------------------------------------------------------------------
 resolve_skip_permissions() {
   if [ "${CHILD_SKIP_PERMISSIONS:-}" = "1" ]; then echo 1; return; fi
   local cmd
   cmd=$(ps -o command= -p "$MAIN_PID" 2>/dev/null || true)
   case "$cmd" in
-    *--dangerously-skip-permissions*|*--allow-dangerously-skip-permissions*) echo 1; return ;;
+    *\ --dangerously-skip-permissions*) echo 1; return ;;
   esac
   echo 0
 }
@@ -269,15 +282,31 @@ chmod +x "$WRAPPER"
 #   * always split the LARGEST pane in the window, so repeated /child calls
 #     produce a balanced, visually appealing layout instead of slivers
 #   * always exactly 50-50
-#   * wide pane -> side-by-side split, tall pane -> stacked split (terminal
+#   * direction: -H forces side-by-side, -V forces stacked; otherwise auto —
+#     wide pane -> side-by-side split, tall pane -> stacked split (terminal
 #     cells are ~2x taller than wide, so compare width against 2*height)
+#
+# After the split we rebalance the WHOLE window with tmux's own even layouts.
+# A bare sequence of 50/50 splits leaves a staircase of half-of-a-half panes
+# once you nest or spawn several children; select-layout redistributes every
+# pane evenly so the window stays a clean grid no matter how many/how nested:
+#   * -H -> even-horizontal (equal columns)
+#   * -V -> even-vertical   (equal rows)
+#   * auto -> tiled         (balanced grid)
 # ---------------------------------------------------------------------------
 smart_split() {
-  local window="$1" target w h dir
+  local window="$1" target w h dir layout pane
   read -r target w h < <(tmux list-panes -t "$window" -F '#{pane_id} #{pane_width} #{pane_height}' \
     | awk '{ a = $2 * $3; if (a > max) { max = a; line = $0 } } END { print line }')
-  if [ "${w:-0}" -gt $(( ${h:-0} * 2 )) ]; then dir="-h"; else dir="-v"; fi
-  tmux split-window "$dir" -l '50%' -d -P -F '#{pane_id}' -t "$target" -c "$PWD" "bash $WRAPPER"
+  case "$SPLIT_DIR" in
+    h) dir="-h"; layout="even-horizontal" ;;
+    v) dir="-v"; layout="even-vertical" ;;
+    *) layout="tiled"
+       if [ "${w:-0}" -gt $(( ${h:-0} * 2 )) ]; then dir="-h"; else dir="-v"; fi ;;
+  esac
+  pane=$(tmux split-window "$dir" -l '50%' -d -P -F '#{pane_id}' -t "$target" -c "$PWD" "bash $WRAPPER")
+  tmux select-layout -t "$window" "$layout" >/dev/null 2>&1 || true
+  printf '%s\n' "$pane"
 }
 
 if [ -n "${TMUX:-}" ]; then
